@@ -2,17 +2,17 @@ from binance import Client, ThreadedWebsocketManager, ThreadedDepthCacheManager
 from binance.exceptions import BinanceAPIException
 import pandas as pd
 import time
-from config import BINANCE_API_KEY, BINANCE_API_SECRET, USE_TESTNET
+from config import BINANCE_API_KEY, BINANCE_API_SECRET
 
 class BinanceFutures:
     def __init__(self, api_key, api_secret):
         try:
-            self.client = Client(api_key, api_secret, testnet=USE_TESTNET)
+            self.client = Client(api_key, api_secret)
             self.client.ping()
         except BinanceAPIException as e:
             if "restricted location" in str(e).lower():
-                print("Restricted location detected. Attempting fallback to binance.us TLD...")
-                self.client = Client(api_key, api_secret, tld='us', testnet=USE_TESTNET)
+                print("CRITICAL: This environment is in a restricted location (e.g. US) and cannot trade Binance Futures.")
+                raise e
             else:
                 raise e
         self.api_key = api_key
