@@ -55,12 +55,21 @@ class BinanceFuturesClient:
             self._price_precision = int(sym["pricePrecision"])
             self._qty_precision = int(sym["quantityPrecision"])
             for f in sym["filters"]:
-                if f["filterType"] == "LOT_SIZE":
+                ftype = f.get("filterType", "")
+                if ftype == "LOT_SIZE":
                     self._step_size = float(f["stepSize"])
-                elif f["filterType"] == "PRICE_FILTER":
+                elif ftype == "PRICE_FILTER":
                     self._tick_size = float(f["tickSize"])
-                elif f["filterType"] == "MIN_NOTIONAL":
-                    self._min_notional = float(f["notional"])
+                elif ftype in ("MIN_NOTIONAL", "NOTIONAL"):
+                    # Binance uses different keys across endpoints/timeframes
+                    notional = f.get("notional") or f.get("minNotional") or f.get("value")
+                    if notional is not None:
+                        self._min_notional = float(notional)
+            logger.debug(
+                "Loaded filters for %s: price_prec=%d qty_prec=%d step=%s tick=%s min_notional=%s",
+                self.symbol, self._price_precision, self._qty_precision,
+                self._step_size, self._tick_size, self._min_notional,
+            )
             return
         raise ValueError(f"Symbol {self.symbol} not found on Binance Futures")
 

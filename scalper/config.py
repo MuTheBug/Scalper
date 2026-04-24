@@ -50,7 +50,16 @@ class BotConfig:
     atr_stop_multiplier: float = 1.5
     risk_per_trade: float = 0.01  # 1% of equity
     max_risk_per_trade: float = 0.02
-    leverage: int = 5
+    leverage: int = 10
+
+    # --- Small-account handling ---
+    # When True and the computed 1% position is below the exchange's
+    # min-notional, the bot widens risk up to `small_account_max_risk`
+    # so the trade can still execute. This is the only way a sub-$5
+    # wallet will ever satisfy Binance's $5 MIN_NOTIONAL filter.
+    small_account_mode: bool = True
+    small_account_max_risk: float = 0.25  # cap the auto-widened risk at 25%
+    absolute_min_capital: float = 0.50  # refuse to trade below this (USDT)
 
     # --- Bifurcated exit (Steps 8 & 9) ---
     tp1_rr: float = 1.0
@@ -72,7 +81,9 @@ class BotConfig:
     # --- Operational ---
     testnet: bool = True
     dry_run: bool = True
-    log_level: str = "INFO"
+    log_level: str = "DEBUG"
+    log_file: str = "scalper.log"
+    verbose_ticks: bool = True  # emit per-tick decision diagnostics
 
     # Binance contract precision is discovered via exchangeInfo at runtime,
     # these are conservative defaults for DOGEUSDT.

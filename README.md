@@ -69,16 +69,63 @@ All tunables live in `scalper/config.py`:
 - `risk_per_trade` / `max_risk_per_trade` — 1% / 2% equity cap
 - `tp1_rr` / `tp1_fraction` — 1.0 R / 70% of position liquidated at TP1
 - `prefer_maker` — set `False` to route taker-only (simpler but higher fees)
-- `leverage` — default 5x; the PDF does not prescribe a level, tune carefully
+- `leverage` — default 10x; the PDF does not prescribe a level, tune carefully
+- `small_account_mode` — when `True` (default), the risk manager auto-widens
+  risk just enough to meet the exchange's MIN_NOTIONAL filter. See below.
+- `small_account_max_risk` — hard cap on the widened risk; default 25%
+- `absolute_min_capital` — bot refuses to trade below this; default $0.50
 
-Environment overrides:
+### Small-account mode (trading with < $3)
+
+Binance Futures enforces a ~$5 MIN_NOTIONAL filter on DOGEUSDT. A literal
+1% risk on $3 of equity produces a $3 position, which the exchange will
+reject. When `small_account_mode=True` the bot:
+
+1. Computes the smallest qty that clears `min_notional` (pulled live from
+   `futures_exchange_info`).
+2. Back-solves the implied risk percentage.
+3. Executes if that risk is ≤ `small_account_max_risk`; otherwise it
+   logs a warning and skips the trade.
+
+With `$3` equity, a 0.1% stop distance and the default $5 min-notional,
+this works out to ≈1.67% risk ($0.05 at-risk). Check the log line:
+
+```
+Small-account mode: widening risk to 1.67% (risk_usd=$0.0500) to satisfy min_notional
+```
+
+Leverage (default 10x) is independent: it just determines how much
+margin the position locks up. $5 notional at 10x = $0.50 margin.
+
+### Environment overrides
 
 | Variable | Effect |
 |---|---|
 | `BINANCE_API_KEY` / `BINANCE_API_SECRET` | Exchange credentials |
 | `BINANCE_TESTNET` | `true` (default) uses testnet, `false` is mainnet |
 | `DRY_RUN` | `true` (default) skips order placement |
-| `LOG_LEVEL` | e.g. `DEBUG`, `INFO` |
+| `DRY_RUN_EQUITY` | Equity to assume when dry-running (default 1000) |
+| `LOG_LEVEL` | `DEBUG` (default), `INFO`, `WARNING` |
+| `LOG_FILE` | Rotating log path (default `scalper.log`) |
+
+### Logs
+
+DEBUG is the default. A typical tick produces:
+
+```
+Tick 0012 | DOGEUSDT=mid=0.097321 | spread=0.000010 | equity=$3.00 | pos=FLAT
+Step 3 — Trend bias: close=0.097410 ema100=0.095220 -> LONG_ONLY
+Step 5 — Lorentzian: signal=+1 (neighbors=8 threshold=5)
+Step 6 — Confluence probe (side=long): stoch K=34.12 (prev 24.88) D=28.55 EWO=0.0412 ...
+  long gate: stoch_cross_up=True ewo>0=True vol_ok=True -> PASS
+Step 4 — Order flow: spread=0.000010 mid=0.097321 walls=2 support=0.097100 resistance=0.098500 absorption=bullish
+SIGNAL LONG entry=0.097330 stop=0.097180 ATR=0.000100 ...
+Plan built: side=long qty=50.0000 ... risk=$0.0500 (1.67%) notional=$5.0000 ...
+EXECUTE LONG DOGEUSDT qty=50.0000 ...
+```
+
+A rotating file handler writes the same content to `scalper.log`
+(5×5MB by default) so you can post-mortem sessions.
 
 ## Project layout
 
