@@ -313,9 +313,36 @@ def _setup_logging(cfg: BotConfig) -> None:
 
 
 def main() -> None:
+    import argparse
+    from .config import apply_profile, PROFILES
+
     load_dotenv()
-    CONFIG.testnet = os.environ.get("BINANCE_TESTNET", "true").lower() == "true"
-    CONFIG.dry_run = os.environ.get("DRY_RUN", "true").lower() == "true"
+
+    parser = argparse.ArgumentParser(description="DOGE Scalping Bot — Binance Futures")
+    parser.add_argument(
+        "--profile",
+        choices=list(PROFILES.keys()),
+        default=os.environ.get("STRATEGY_PROFILE", CONFIG.strategy_profile),
+        help="Strategy profile: strict | balanced (default) | aggressive",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action=argparse.BooleanOptionalAction,
+        default=os.environ.get("DRY_RUN", "true").lower() == "true",
+        help="Dry-run mode (no orders sent). Default: true",
+    )
+    parser.add_argument(
+        "--testnet",
+        action=argparse.BooleanOptionalAction,
+        default=os.environ.get("BINANCE_TESTNET", "true").lower() == "true",
+        help="Use Binance testnet. Default: true",
+    )
+    args = parser.parse_args()
+
+    apply_profile(CONFIG, args.profile)
+    CONFIG.testnet = args.testnet
+    CONFIG.dry_run = args.dry_run
+
     _setup_logging(CONFIG)
 
     bot = ScalpingBot(CONFIG)
