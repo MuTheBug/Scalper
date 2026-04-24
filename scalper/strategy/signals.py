@@ -29,11 +29,13 @@ import pandas as pd
 
 from ..config import BotConfig
 from .indicators import (
+    adx,
     atr,
     elder_weight_oscillator,
     ema,
     lorentzian_classify,
     parabolic_sar,
+    rsi,
     stochastic_rsi,
 )
 from .order_flow import OrderBookSnapshot, detect_absorption, find_walls, nearest_support_resistance
@@ -146,51 +148,144 @@ class SignalEngine:
         )
         return passed
 
+    # -- quality filters ----------------------------------------------------
+
+    def _trend_strength_ok(self, df: pd.DataFrame) -> bool:
+        cfg = self.config
+        if cfg.min_adx <= 0:
+            return True
+        adx_value = float(adx(df, cfg.atr_period).iloc[-1])
+        ok = adx_value >= cfg.min_adx
+        logger.debug("Trend strength: ADX=%.2f >= %.2f -> %s", adx_value, cfg.min_adx, ok)
+        return ok
+
+    def _ewo_magnitude_ok(self, df: pd.DataFrame, side: str) -> bool:
+        cfg = self.config
+        if cfg.min_ewo_magnitude <= 0:
+            return True
+        ewo_value = float(elder_weight_oscillator(df["close"], cfg.ewo_fast, cfg.ewo_slow).iloc[-1])
+        if side == "long":
+            ok = ewo_value >= cfg.min_ewo_magnitude
+        else:
+            ok = ewo_value <= -cfg.min_ewo_magnitude
+        logger.debug("EWO magnitude: %.4f side=%s threshold=%.4f -> %s",
+                     ewo_value, side, cfg.min_ewo_magnitude, ok)
+        return ok
+
     # -- alternate entry patterns -------------------------------------------
 
     def pullback_entry(self, df: pd.DataFrame, side: str) -> bool:
+        """High-quality pullback: real dip into trend EMA + RSI confirmation + bounce volume."""
         cfg = self.config
         if not cfg.enable_pullback_entries:
             return False
+
+        if not self._trend_strength_ok(df):
+            logger.debug("Pullback rejected: trend too weak")
+            return False
+        if not self._ewo_magnitude_ok(df, side):
+            logger.debug("Pullback rejected: EWO magnitude insufficient")
+            return False
+
         ema_short = ema(df["close"], cfg.pullback_ema_period)
         last_close = float(df["close"].iloc[-1])
         last_ema = float(ema_short.iloc[-1])
         if last_ema == 0:
             return False
-        touch = abs(last_close - last_ema) / last_ema <= cfg.pullback_touch_tolerance
-        if not touch:
+
+        # Must have ACTUALLY pulled back: prior N bars touched the EMA from the trend side
+        lookback = cfg.pullback_dip_bars
+        recent = df.iloc[-lookback - 1:-1]
+        recent_low = float(recent["low"].min())
+        recent_high = float(recent["high"].max())
+        if side == "long":
+            actually_dipped = recent_low <= last_ema * (1 + cfg.pullback_touch_tolerance)
+        else:
+            actually_dipped = recent_high >= last_ema * (1 - cfg.pullback_touch_tolerance)
+        if not actually_dipped:
+            logger.debug("Pullback rejected: no real dip in last %d bars", lookback)
             return False
+
+        # RSI must be in the pullback zone (not in extreme territory either way)
+        rsi_value = float(rsi(df["close"], 14).iloc[-1])
+        if side == "long":
+            rsi_ok = cfg.pullback_rsi_min_long <= rsi_value <= cfg.pullback_rsi_max_long
+        else:
+            rsi_ok = cfg.pullback_rsi_min_short <= rsi_value <= cfg.pullback_rsi_max_short
+        if not rsi_ok:
+            logger.debug("Pullback rejected: RSI=%.1f out of zone", rsi_value)
+            return False
+
+        # Confirm the bounce: current bar moved in trend direction with above-average volume
         prev_close = float(df["close"].iloc[-2])
+        vol_now = float(df["volume"].iloc[-1])
+        vol_ref = float(df["volume"].rolling(cfg.volume_ma_period).mean().iloc[-1])
+        vol_ok = vol_ref > 0 and vol_now >= vol_ref * cfg.volume_confirmation_multiplier
         if side == "long":
             bouncing = last_close > prev_close and last_close > last_ema
         else:
             bouncing = last_close < prev_close and last_close < last_ema
+
+        passed = bouncing and vol_ok
         logger.debug(
-            "Pullback probe (%s): close=%.6f ema%d=%.6f touch=%s bouncing=%s",
-            side, last_close, cfg.pullback_ema_period, last_ema, touch, bouncing,
+            "Pullback probe (%s): close=%.6f ema%d=%.6f rsi=%.1f bouncing=%s vol_ok=%s -> %s",
+            side, last_close, cfg.pullback_ema_period, last_ema, rsi_value, bouncing, vol_ok,
+            "PASS" if passed else "FAIL",
         )
-        return touch and bouncing
+        return passed
 
     def breakout_entry(self, df: pd.DataFrame, side: str) -> bool:
+        """Volatility breakout: clean breach of N-bar high/low + ATR expansion + body-dominant bar."""
         cfg = self.config
         if not cfg.enable_breakout_entries:
             return False
-        window = cfg.breakout_window
-        if len(df) < window + 2:
+        if not self._trend_strength_ok(df):
             return False
+        if not self._ewo_magnitude_ok(df, side):
+            return False
+
+        window = cfg.breakout_window
+        if len(df) < window + cfg.atr_period + 5:
+            return False
+
         recent = df.iloc[-window - 1:-1]
-        last_close = float(df["close"].iloc[-1])
-        vol_now = float(df["volume"].iloc[-1])
-        vol_ref = float(df["volume"].rolling(cfg.volume_ma_period).mean().iloc[-1])
-        vol_ok = vol_ref > 0 and vol_now >= vol_ref * max(1.2, cfg.volume_confirmation_multiplier)
+        last = df.iloc[-1]
+        last_close = float(last["close"])
+        last_open = float(last["open"])
+        last_high = float(last["high"])
+        last_low = float(last["low"])
+
         if side == "long":
             breach = last_close > float(recent["high"].max())
         else:
             breach = last_close < float(recent["low"].min())
+        if not breach:
+            return False
+
+        # Volume expansion
+        vol_now = float(last["volume"])
+        vol_ref = float(df["volume"].rolling(cfg.volume_ma_period).mean().iloc[-1])
+        vol_ok = vol_ref > 0 and vol_now >= vol_ref * cfg.breakout_volume_multiplier
+
+        # ATR expansion: current ATR > moving average of ATR (volatility regime change)
+        atr_series = atr(df, cfg.atr_period)
+        atr_now = float(atr_series.iloc[-1])
+        atr_ma = float(atr_series.rolling(cfg.atr_period).mean().iloc[-1])
+        atr_ok = atr_ma > 0 and atr_now >= atr_ma * cfg.breakout_atr_expansion
+
+        # Body must dominate the bar (not a wick)
+        bar_range = max(1e-12, last_high - last_low)
+        body = abs(last_close - last_open) / bar_range
+        body_ok = body >= cfg.breakout_min_body_ratio
+        body_in_direction = (last_close > last_open) if side == "long" else (last_close < last_open)
+
+        passed = vol_ok and atr_ok and body_ok and body_in_direction
         logger.debug(
-            "Breakout probe (%s): breach=%s vol_ok=%s", side, breach, vol_ok,
+            "Breakout probe (%s): breach=%s vol_ok=%s atr_ok=%s body=%.2f dir_ok=%s -> %s",
+            side, breach, vol_ok, atr_ok, body, body_in_direction,
+            "PASS" if passed else "FAIL",
         )
-        return breach and vol_ok
+        return passed
 
     # -- order flow ----------------------------------------------------------
 
@@ -239,6 +334,12 @@ class SignalEngine:
 
         lor = self.lorentzian(execution_df)
         side = "long" if bias == 1 else "short"
+
+        # Apply quality filters once for all paths (cheap to recompute, clearer logs).
+        quality_ok = self._trend_strength_ok(execution_df) and self._ewo_magnitude_ok(execution_df, side)
+        if not quality_ok:
+            logger.debug("Quality filters failed — no entry")
+            return None
 
         # Primary path: PDF confluence backed by Lorentzian agreement.
         primary = lor == bias and self.confluence(execution_df, side)

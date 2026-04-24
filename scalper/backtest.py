@@ -111,7 +111,9 @@ def _run_bar_signals(engine: SignalEngine, exec_df: pd.DataFrame,
         stop_distance = cfg.atr_stop_multiplier * last_atr
         entry = close
         stop = entry - stop_distance if side == "long" else entry + stop_distance
-        tp1 = entry + stop_distance * cfg.tp1_rr if side == "long" else entry - stop_distance * cfg.tp1_rr
+        # TP1 distance honors the profile's tp1_rr (e.g. quality profile uses 1.5R)
+        tp1_dist = stop_distance * cfg.tp1_rr
+        tp1 = entry + tp1_dist if side == "long" else entry - tp1_dist
         reason = []
         if primary: reason.append("primary")
         if pullback: reason.append("pullback")
@@ -171,9 +173,21 @@ def run(bars: int = 1500, profile: str = "balanced") -> Dict:
     signal_by_idx = {idx: (side, entry, stop, tp1, reason)
                      for idx, side, entry, stop, tp1, reason in signals}
 
+    consecutive_losses = 0
+    cooldown_until = -1
+    daily_loss_r = 0.0
+    daily_anchor_idx = start_idx
+    cooldown_skips = 0
+    daily_cap_skips = 0
+
     for i in range(start_idx, len(exec_df)):
         row = exec_df.iloc[i]
         high, low = float(row["high"]), float(row["low"])
+
+        # Reset daily P&L every 1440 1m-bars (24h)
+        if i - daily_anchor_idx >= 1440:
+            daily_loss_r = 0.0
+            daily_anchor_idx = i
 
         if open_trade is not None:
             plan_side = open_trade.side
@@ -196,6 +210,14 @@ def run(bars: int = 1500, profile: str = "balanced") -> Dict:
                 open_trade.exit_idx = i
                 open_trade.exit_price = exit_price
                 trades.append(open_trade)
+                # Update streak / daily / cooldown bookkeeping
+                if open_trade.pnl_r <= 0:
+                    consecutive_losses += 1
+                    daily_loss_r += abs(open_trade.pnl_r)
+                    if consecutive_losses >= cfg.cooldown_after_losses:
+                        cooldown_until = i + cfg.cooldown_bars
+                else:
+                    consecutive_losses = 0
                 open_trade = None
                 tp1_filled = False
                 continue
@@ -215,8 +237,14 @@ def run(bars: int = 1500, profile: str = "balanced") -> Dict:
                     trail_stop = new_psar
             continue
 
-        # No open trade — look up signal for this bar
+        # No open trade — check cooldown and daily loss cap before opening
         if i in signal_by_idx:
+            if i < cooldown_until:
+                cooldown_skips += 1
+                continue
+            if cfg.daily_loss_cap_r > 0 and daily_loss_r >= cfg.daily_loss_cap_r:
+                daily_cap_skips += 1
+                continue
             side, entry, stop, tp1, reason = signal_by_idx[i]
             counts.trades_opened += 1
             open_trade = Trade(side=side, entry_idx=i, entry=entry, stop=stop, tp1=tp1,
@@ -224,6 +252,8 @@ def run(bars: int = 1500, profile: str = "balanced") -> Dict:
             tp1_filled = False
             r_unit = abs(entry - stop)
             trail_stop = stop
+
+    counts.trades_skipped_risk = cooldown_skips + daily_cap_skips
 
     # Force-close any still-open trade at final price
     if open_trade is not None:
@@ -255,6 +285,7 @@ def _report(trades: List[Trade], c: GateCounts, cfg) -> None:
     print(f"  Breakout pattern       : {c.breakout}")
     print(f"  Signals emitted        : {c.signals_emitted}")
     print(f"  Trades opened          : {c.trades_opened}")
+    print(f"  Skipped (cooldown/cap) : {c.trades_skipped_risk}")
     print()
 
     if not trades:
@@ -276,14 +307,32 @@ def _report(trades: List[Trade], c: GateCounts, cfg) -> None:
         peak = max(peak, equity_r)
         max_dd = min(max_dd, equity_r - peak)
 
+    profit_factor = (sum(t.pnl_r for t in trades if t.pnl_r > 0) /
+                     abs(sum(t.pnl_r for t in trades if t.pnl_r < 0))) if losses else float("inf")
+
     print("Performance:")
     print(f"  Trades                 : {len(trades)} ({wins}W / {losses}L)")
     print(f"  Win rate               : {win_rate:.1f}%")
     print(f"  Average R per trade    : {avg_r:+.3f}")
     print(f"  Average winning trade  : {avg_win:+.3f} R")
     print(f"  Average losing trade   : {avg_loss:+.3f} R")
+    print(f"  Profit factor          : {profit_factor:.2f}")
     print(f"  Cumulative R           : {total_r:+.2f}")
     print(f"  Max drawdown (R)       : {max_dd:.2f}")
+    print()
+
+    # Per-pattern breakdown
+    print("By pattern:")
+    for pattern in ("primary", "pullback", "breakout"):
+        subset = [t for t in trades if pattern in (t.reason or "")]
+        if not subset:
+            continue
+        sub_wins = sum(1 for t in subset if t.pnl_r > 0)
+        sub_total_r = sum(t.pnl_r for t in subset)
+        sub_avg_r = sub_total_r / len(subset)
+        print(f"  {pattern:9s}: {len(subset):3d} trades | "
+              f"win rate {sub_wins/len(subset)*100:5.1f}% | "
+              f"avg R {sub_avg_r:+.3f} | total R {sub_total_r:+.2f}")
     print()
     print("First 10 trades:")
     for t in trades[:10]:
@@ -298,7 +347,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
     parser = argparse.ArgumentParser()
     parser.add_argument("--bars", type=int, default=1500)
-    parser.add_argument("--profile", choices=["strict", "balanced", "aggressive"], default="balanced")
+    parser.add_argument("--profile", choices=["strict", "quality", "balanced", "aggressive"], default="quality")
     parser.add_argument("--verbose", action="store_true", help="Enable per-bar DEBUG logging")
     args = parser.parse_args()
 

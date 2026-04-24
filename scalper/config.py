@@ -59,15 +59,32 @@ class BotConfig:
     volume_ma_period: int = 20
     volume_confirmation_multiplier: float = 1.0
 
+    # --- Quality filters (apply to all entry types) ---
+    # Minimum ADX value for trend strength. 0 disables.
+    min_adx: float = 18.0
+    # Minimum |EWO| for momentum strength. 0 disables.
+    min_ewo_magnitude: float = 0.0
+
     # --- Alternate entry patterns ---
-    # Besides the strict PDF confluence, the bot can optionally take a
-    # pullback-to-EMA or momentum-breakout trade. These share the same
-    # risk and trend-bias rules.
     enable_pullback_entries: bool = True
     pullback_ema_period: int = 21
-    pullback_touch_tolerance: float = 0.002  # within 0.2% of EMA
+    pullback_touch_tolerance: float = 0.002
+    pullback_dip_bars: int = 5
+    pullback_rsi_min_long: float = 35.0
+    pullback_rsi_max_long: float = 55.0
+    pullback_rsi_min_short: float = 45.0
+    pullback_rsi_max_short: float = 65.0
+
     enable_breakout_entries: bool = True
     breakout_window: int = 20
+    breakout_volume_multiplier: float = 1.5
+    breakout_atr_expansion: float = 1.2
+    breakout_min_body_ratio: float = 0.55  # body must be >= 55% of total bar range
+
+    # --- Loss-streak cooldown ---
+    cooldown_after_losses: int = 2
+    cooldown_bars: int = 30
+    daily_loss_cap_r: float = 5.0  # stop trading for the day after this many R lost
 
     # --- Order flow (Step 4) ---
     orderbook_depth: int = 50
@@ -130,6 +147,35 @@ PROFILES: Dict[str, Dict] = {
         "volume_confirmation_multiplier": 1.2,
         "enable_pullback_entries": False,
         "enable_breakout_entries": False,
+        "min_adx": 22.0,
+        "tp1_rr": 1.0,
+        "tp1_fraction": 0.70,
+    },
+    "quality": {
+        # Fewer trades, higher conviction. R:R 1.5 — needs ~40% win rate.
+        "lorentzian_threshold": 3,
+        "lorentzian_neighbors": 8,
+        "lorentzian_lookback": 500,
+        "stoch_rsi_oversold": 32.0,
+        "stoch_rsi_overbought": 68.0,
+        "stoch_cross_lookback": 3,
+        "volume_confirmation_multiplier": 1.2,
+        "enable_pullback_entries": True,
+        "enable_breakout_entries": True,
+        "pullback_dip_bars": 6,
+        "pullback_rsi_min_long": 30.0,
+        "pullback_rsi_max_long": 50.0,
+        "pullback_rsi_min_short": 50.0,
+        "pullback_rsi_max_short": 70.0,
+        "breakout_volume_multiplier": 1.6,
+        "breakout_atr_expansion": 1.3,
+        "breakout_min_body_ratio": 0.60,
+        "min_adx": 22.0,
+        "min_ewo_magnitude": 0.10,
+        "cooldown_after_losses": 2,
+        "cooldown_bars": 40,
+        "tp1_rr": 1.5,
+        "tp1_fraction": 0.60,
     },
     "balanced": {
         "lorentzian_threshold": 3,
@@ -141,6 +187,9 @@ PROFILES: Dict[str, Dict] = {
         "volume_confirmation_multiplier": 1.0,
         "enable_pullback_entries": True,
         "enable_breakout_entries": True,
+        "min_adx": 18.0,
+        "tp1_rr": 1.2,
+        "tp1_fraction": 0.65,
     },
     "aggressive": {
         "lorentzian_threshold": 2,
@@ -153,6 +202,9 @@ PROFILES: Dict[str, Dict] = {
         "enable_pullback_entries": True,
         "enable_breakout_entries": True,
         "trend_ema_period": 50,
+        "min_adx": 12.0,
+        "tp1_rr": 1.0,
+        "tp1_fraction": 0.70,
     },
 }
 

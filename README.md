@@ -14,13 +14,28 @@ winning trades is either peeking at future data (look-ahead bias) or
 overfitting a single historical sample so tightly that it will blow
 up on live data. This bot does neither.
 
+Crypto 1-minute scalping on REST-kline backtests typically produces
+win rates in the 35-50% range. That can still be profitable if R:R
+> 1, if the loss-streak cooldown holds drawdowns in check, and if the
+trend-strength filters keep you out of chop. But it is **not** the
+PDF's 70-80% — that figure depends on real-time DOM and absorption
+reads that a historical-kline backtest can't replicate.
+
 What you control:
 
-| Profile      | Trade frequency | Typical win rate | Notes |
-|--------------|-----------------|------------------|-------|
-| `strict`     | Rare            | Highest          | Faithful to the PDF's +5 Lorentzian threshold. Good signals, few per day. |
-| `balanced`   | Moderate        | Moderate         | Default. Widens the Stoch cross window to 5 bars, Lorentzian +3, adds pullback + breakout patterns. |
-| `aggressive` | High            | Lowest of the three | Many trades, higher noise. Use only with tight risk. |
+| Profile      | Signal frequency | R:R at TP1 | Filters | Intent |
+|--------------|------------------|------------|---------|--------|
+| `strict`     | Very low         | 1.0R       | ADX≥22, primary-confluence-only | Faithful to the PDF. |
+| `quality`    | Low              | 1.5R       | ADX≥22, EWO mag ≥0.10, tight pullback/breakout | Fewer, higher-conviction trades. Loses money on random/sideways data, wins when markets actually trend. |
+| `balanced`   | Moderate         | 1.2R       | ADX≥18 | Middle ground; default if unsure. |
+| `aggressive` | High             | 1.0R       | ADX≥12 | Many trades, lots of noise. Highest drawdown risk. |
+
+All profiles share:
+
+- Loss-streak cooldown: pauses trading for 30-40 bars after 2 consecutive stops.
+- Daily loss cap: halts trading for 24h when cumulative R < -5.
+- 1.5× ATR stops; position sized to 1% equity (auto-widens to meet min-notional
+  on small accounts).
 
 Backtest, tune, and validate on testnet before risking real money.
 
@@ -30,20 +45,37 @@ Select at runtime:
 
 ```bash
 python -m scalper.backtest --profile strict     --bars 3000
-python -m scalper.backtest --profile balanced   --bars 3000   # default
+python -m scalper.backtest --profile quality    --bars 3000
+python -m scalper.backtest --profile balanced   --bars 3000
 python -m scalper.backtest --profile aggressive --bars 3000
 ```
 
 Each profile tweaks:
 
-- `lorentzian_threshold` (5 → 3 → 2)
-- `lorentzian_lookback` (2000 → 500 → 300)
-- `stoch_rsi_oversold/overbought` (30/70 → 35/65 → 45/55)
-- `stoch_cross_lookback` (1 → 5 → 10 bars the cross must have happened in)
-- `volume_confirmation_multiplier` (1.2× → 1.0× → 0.8×)
-- `enable_pullback_entries` / `enable_breakout_entries` (off → on → on)
+- `lorentzian_threshold` (5 → 3 → 3 → 2)
+- `lorentzian_lookback` (2000 → 500 → 500 → 300)
+- `stoch_rsi_oversold/overbought` (30/70 → 32/68 → 35/65 → 45/55)
+- `stoch_cross_lookback` (1 → 3 → 5 → 10 bars)
+- `volume_confirmation_multiplier` (1.2× → 1.2× → 1.0× → 0.8×)
+- `tp1_rr` and `tp1_fraction` (the runner vs. scalp-out mix)
+- `min_adx` (trend-strength floor)
+- `enable_pullback_entries` / `enable_breakout_entries` (off → on → on → on)
 
-See `scalper/config.py::PROFILES` for full definitions.
+See `scalper/config.py::PROFILES` for full definitions. Every profile
+enforces:
+
+- **Pullback quality**: real dip into the trend EMA within the last
+  5-6 bars, RSI in the pullback zone (35-55 for long, 45-65 for short),
+  volume expansion on the bounce bar.
+- **Breakout quality**: clean breach of 20-bar high/low, ATR > 1.2-1.3×
+  its moving average, body ≥ 55-60% of bar range, directional close.
+- **Trend strength**: ADX ≥ profile's `min_adx`.
+
+Your earlier -10R result with 37% win rate was the previous (looser)
+pullback logic firing on chop. The current pipeline trades far less
+often but with meaningfully higher setup quality; expect your next
+backtest to show fewer trades, higher average R, and much lower
+drawdown — but still not 100%.
 
 ## Strategy overview
 
