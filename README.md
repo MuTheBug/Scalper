@@ -6,6 +6,45 @@ An implementation of the 9-step scalping strategy described in
 The bot is **defensive by default**: it runs against the Binance testnet and
 in dry-run mode unless you explicitly opt in to live trading.
 
+## Honest profitability expectations
+
+No scalping strategy wins 100% of the time. The PDF itself targets a
+**70-80% win rate**, not 100%. Anything that claims to produce only
+winning trades is either peeking at future data (look-ahead bias) or
+overfitting a single historical sample so tightly that it will blow
+up on live data. This bot does neither.
+
+What you control:
+
+| Profile      | Trade frequency | Typical win rate | Notes |
+|--------------|-----------------|------------------|-------|
+| `strict`     | Rare            | Highest          | Faithful to the PDF's +5 Lorentzian threshold. Good signals, few per day. |
+| `balanced`   | Moderate        | Moderate         | Default. Widens the Stoch cross window to 5 bars, Lorentzian +3, adds pullback + breakout patterns. |
+| `aggressive` | High            | Lowest of the three | Many trades, higher noise. Use only with tight risk. |
+
+Backtest, tune, and validate on testnet before risking real money.
+
+## Strategy profiles
+
+Select at runtime:
+
+```bash
+python -m scalper.backtest --profile strict     --bars 3000
+python -m scalper.backtest --profile balanced   --bars 3000   # default
+python -m scalper.backtest --profile aggressive --bars 3000
+```
+
+Each profile tweaks:
+
+- `lorentzian_threshold` (5 → 3 → 2)
+- `lorentzian_lookback` (2000 → 500 → 300)
+- `stoch_rsi_oversold/overbought` (30/70 → 35/65 → 45/55)
+- `stoch_cross_lookback` (1 → 5 → 10 bars the cross must have happened in)
+- `volume_confirmation_multiplier` (1.2× → 1.0× → 0.8×)
+- `enable_pullback_entries` / `enable_breakout_entries` (off → on → on)
+
+See `scalper/config.py::PROFILES` for full definitions.
+
 ## Strategy overview
 
 Each tick the bot walks the PDF's confluence cascade before taking a trade:
